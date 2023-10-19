@@ -6,7 +6,9 @@ from webdriver_manager.microsoft import EdgeChromiumDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.support.wait import WebDriverWait
-
+import openpyxl
+import json
+from selenium_recaptcha_solver import DelayConfig
 
 headers = {
     'Accept-Encoding': 'gzip, deflate, br',
@@ -76,93 +78,321 @@ regions = [
     "Veyrier (48)"
 ]
 
+def save_to_excel(plot, region, owner):
 
-def run():
+    try:
+        # Load an existing workbook or create a new one if it doesn't exist
+        workbook = openpyxl.load_workbook("plots.xlsx")
 
-    pass
+        # Select the default active sheet (usually the first sheet)
+        sheet = workbook.active
 
-def save_to_excel():
+        # Add data to the sheet in the specified order
+        sheet.append([plot, region, owner])
 
-    pass
+        # Save the workbook with the added data
+        workbook.save("plots.xlsx")
+
+        print(f"Data ({plot}, {region}, {owner}) added to the Excel file.")
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+
+def save_progress(region, plot):
+
+    try:
+        with open("progress.json", "r") as file:
+            progress = json.load(file)
+    except FileNotFoundError:
+        # If the file doesn't exist, initialize an empty progress dictionary
+        progress = {}
+
+    # Check if the region already exists in the progress data
+    if region not in progress:
+        # If the region doesn't exist, create a new list for it
+        progress[region] = []
+
+    # Append the plot number to the region's list
+    progress[region].append(plot)
+
+    # Save the updated progress data back to the JSON file
+    with open("progress.json", "w") as file:
+        json.dump(progress, file, indent=4)
 
 def scrape(heads, regions):
 
-    service = Service(EdgeChromiumDriverManager().install())
-
-    driver = webdriver.Edge(service=service)
+    script = "Object.defineProperty(navigator, 'webdriver', {get: () => false})"
 
     edge_options = Options()
+
+    # edge_options.add_argument("--headless")
+    
+    edge_options.add_argument("window-size=1280,1000")
+
+     # Adding argument to disable the AutomationControlled flag 
+    edge_options.add_argument("--disable-blink-features=AutomationControlled") 
+    
+    # Exclude the collection of enable-automation switches 
+    edge_options.add_experimental_option("excludeSwitches", ["enable-automation"]) 
+    
+    # Turn-off userAutomationExtension 
+    edge_options.add_experimental_option("useAutomationExtension", False) 
+
+    edge_options.add_experimental_option(
+        'excludeSwitches', [
+        'disable-extensions',
+        'disable-default-apps',
+        'disable-component-extensions-with-background-pages',
+    ])
 
     for key, value in heads.items():
             
             edge_options.add_argument(f'--{key}={value}')
 
+    service = Service(EdgeChromiumDriverManager().install())
+
+    driver = webdriver.Edge(service=service, options=edge_options)
+
     driver.get("https://ge.ch/terextraitfoncier/immeuble.aspx")
 
-    wait = WebDriverWait(driver, 30).until(lambda x: x.find_element(By.ID, "ddlCommune"))
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})
 
-    region_input = driver.find_element(By.ID, "ddlCommune")
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-    region_input.click()
+    driver.execute_script("""
+    Object.defineProperty(navigator, 'plugins', {
+        // This just needs to have `length > 0` for the current test,
+        // but we could mock the plugins too if necessary.
+        get: () => [1, 2, 3, 4, 5, 6, 7, 8],
+    });
 
-    sleep(1)
+    """)
 
-    select_region = driver.find_element(By.XPATH, f"//option[text()='{regions[0]}']")
+    try:
+        with open("progress.json", "r") as file:
+            progress = json.load(file)
+    except FileNotFoundError:
+        progress = {}
 
-    select_region.click()
-
-    sleep(1)
-
-    plot_input = driver.find_element(By.ID, "tbParcelle")
-
-    sleep(0.5)
-
-    plot_input.send_keys("150")
-
-    sleep(1)
-
-    iframe_element = driver.find_element(By.XPATH, "//iframe[@title='reCAPTCHA']")
-
-    # driver.switch_to.frame(iframe_element)
+    regions_scraped, last_region = [], ''
 
     try:
 
-        sleep(1)
+        regions_scraped, last_region = list(progress.keys())[:-1], list(progress.keys())[-1] 
 
-        solver = RecaptchaSolver(driver=driver)
-
-        solver.click_recaptcha_v2(iframe=iframe_element)
-
-    except Exception as e:
-
-        # captcha = driver.find_element(By.CLASS_NAME, "recaptcha-checkbox-border")
-
-        # captcha.click()
+    except Exception:
 
         pass
 
-    sleep(2)
+    for region in regions:
 
-    driver.switch_to.default_content()
+        if region in regions_scraped:
 
-    sleep(5)
+            continue
 
-    ex = driver.find_element(By.ID, "btnSubmit")
+        if region == last_region:
 
-    ex.click()
+            for i in range(max(progress[last_region])+1, 10_001):
 
-    sleep(15)
+                wait = WebDriverWait(driver, 30).until(lambda x: x.find_element(By.ID, "ddlCommune"))
 
-    owners = driver.find_element(By.XPATH, "//select[@name='select_proprietaires']")
+                region_input = driver.find_element(By.ID, "ddlCommune")
 
-    owners = owners.find_elements(By.TAG_NAME, "option")
+                region_input.click()
 
-    for owner in owners:
+                sleep(1)
 
-        print(owner.text)
+                select_region = driver.find_element(By.XPATH, f"//option[text()='{region}']")
 
+                select_region.click()
+
+                sleep(1)
+
+                plot_input = driver.find_element(By.ID, "tbParcelle")
+
+                sleep(0.5)
+
+                plot_input.clear()
+
+                sleep(0.5)
+
+                plot_input.send_keys(f"{i}")
+
+                sleep(1)
+
+                try:
+
+                    iframe_element = driver.find_element(By.XPATH, "//iframe[@title='reCAPTCHA']")
+
+                    try:
+
+                        sleep(1)
+
+                        solver = RecaptchaSolver(driver=driver)
+
+                        solver.click_recaptcha_v2(iframe=iframe_element)
+
+                    except Exception as e:
+
+                        # captcha = driver.find_element(By.CLASS_NAME, "recaptcha-checkbox-border")
+
+                        # captcha.click()
+
+                        pass
+
+                except Exception:
+
+                    pass
+
+                # driver.switch_to.frame(iframe_element)
+
+                sleep(1)
+
+                driver.switch_to.default_content()
+
+                ex = driver.find_element(By.ID, "btnSubmit")
+
+                ex.click()
+
+                save_progress(region, i)
+
+                try:
+
+                    wait = WebDriverWait(driver, 5).until(lambda x: x.find_element(By.XPATH, "//select[@name='select_proprietaires']"))
+
+                except Exception as e:
+
+                    continue
+
+                try:
+
+                    owners = driver.find_element(By.XPATH, "//select[@name='select_proprietaires']")
+
+                    owners = owners.find_elements(By.TAG_NAME, "option")
+
+                except Exception as e:
+
+                    driver.back()
+
+                    continue
+
+                for owner in owners:
+
+                    save_to_excel(i, region.split(" ")[0], owner)
+
+                driver.back()
+
+        else:
+
+            for i in range(0, 10_001):
+
+                wait = WebDriverWait(driver, 30).until(lambda x: x.find_element(By.ID, "ddlCommune"))
+
+                region_input = driver.find_element(By.ID, "ddlCommune")
+
+                region_input.click()
+
+                sleep(1)
+
+                select_region = driver.find_element(By.XPATH, f"//option[text()='{region}']")
+
+                select_region.click()
+
+                sleep(1)
+
+                plot_input = driver.find_element(By.ID, "tbParcelle")
+
+                sleep(0.5)
+
+                plot_input.clear()
+
+                sleep(0.5)
+
+                plot_input.send_keys(f"{i}")
+
+                sleep(1)
+
+                try:
+
+                    iframe_element = driver.find_element(By.XPATH, "//iframe[@title='reCAPTCHA']")
+
+                    try:
+
+                        sleep(1)
+
+                        solver = RecaptchaSolver(driver=driver)
+
+                        solver.click_recaptcha_v2(iframe=iframe_element)
+
+                    except Exception as e:
+
+                        # captcha = driver.find_element(By.CLASS_NAME, "recaptcha-checkbox-border")
+
+                        # captcha.click()
+
+                        pass
+
+                except Exception:
+
+                    pass
+
+                # driver.switch_to.frame(iframe_element)
+
+                sleep(1)
+
+                driver.switch_to.default_content()
+
+                ex = driver.find_element(By.ID, "btnSubmit")
+
+                ex.click()
+
+                save_progress(region, i)
+
+                try:
+
+                    wait = WebDriverWait(driver, 5).until(lambda x: x.find_element(By.XPATH, "//select[@name='select_proprietaires']"))
+
+                except Exception as e:
+
+                    continue
+
+                try:
+
+                    owners = driver.find_element(By.XPATH, "//select[@name='select_proprietaires']")
+
+                    owners = owners.find_elements(By.TAG_NAME, "option")
+
+                except Exception as e:
+
+                    driver.back()
+
+                    continue
+
+                for owner in owners:
+
+                    save_to_excel(i, region.split(" ")[0], owner.text)
+
+                driver.back()
+
+
+def run():
+
+    while True:
+
+        try:
+
+            scrape(headers, regions)
+
+            break
+
+        except Exception as e:
+
+            print(e)
+
+            print(e.with_traceback(None))
+
+            sleep(10_800)
 
 
 if __name__ == "__main__":
 
-    scrape(headers, regions)
+    run()
